@@ -9,6 +9,7 @@ use crate::core::error::{CrabClawError, Result};
 const DEFAULT_API_BASE: &str = "https://api.example.com";
 const DEFAULT_MODEL: &str = "openai:gpt-4o";
 const API_KEY_KEY: &str = "API_KEY";
+const ANTHROPIC_ACCESS_TOKEN_KEY: &str = "ANTHROPIC_ACCESS_TOKEN";
 const API_BASE_KEY: &str = "BASE_URL";
 const MODEL_KEY: &str = "MODEL";
 const SYSTEM_PROMPT_KEY: &str = "SYSTEM_PROMPT";
@@ -23,6 +24,7 @@ const DEFAULT_MAX_CONTEXT_MESSAGES: usize = 50;
 pub struct AppConfig {
     pub profile: String,
     pub api_key: String,
+    pub anthropic_access_token: Option<String>,
     pub api_base: String,
     pub model: String,
     pub system_prompt: Option<String>,
@@ -70,6 +72,8 @@ pub fn resolve_config(
     let profile_name = profile.unwrap_or("default").trim().to_string();
     let profile_token = normalize_profile_token(&profile_name);
     let profiled_api_key = format!("PROFILE_{profile_token}_{API_KEY_KEY}");
+    let profiled_anthropic_access_token =
+        format!("PROFILE_{profile_token}_{ANTHROPIC_ACCESS_TOKEN_KEY}");
     let profiled_api_base = format!("PROFILE_{profile_token}_{API_BASE_KEY}");
     let profiled_model = format!("PROFILE_{profile_token}_{MODEL_KEY}");
 
@@ -80,6 +84,23 @@ pub fn resolve_config(
         dotenv_vars.get(&profiled_api_key),
         dotenv_vars.get(API_KEY_KEY),
     ]);
+
+    let anthropic_access_token = first_present([
+        env_vars.get(&profiled_anthropic_access_token),
+        env_vars.get(ANTHROPIC_ACCESS_TOKEN_KEY),
+        dotenv_vars.get(&profiled_anthropic_access_token),
+        dotenv_vars.get(ANTHROPIC_ACCESS_TOKEN_KEY),
+    ]);
+
+    let model = first_present([
+        cli_overrides.model.as_ref(),
+        env_vars.get(&profiled_model),
+        env_vars.get(MODEL_KEY),
+        dotenv_vars.get(&profiled_model),
+        dotenv_vars.get(MODEL_KEY),
+        Some(&DEFAULT_MODEL.to_string()),
+    ])
+    .unwrap_or_else(|| DEFAULT_MODEL.to_string());
 
     // Check if AUTH_MODE=oauth is explicitly set
     let auth_mode = first_present([env_vars.get("AUTH_MODE"), dotenv_vars.get("AUTH_MODE")]);
@@ -102,6 +123,8 @@ pub fn resolve_config(
     } else if let Some(tokens) = crate::core::auth::load_tokens() {
         // No API key configured, but OAuth tokens exist — use them
         tokens.access_token
+    } else if model.starts_with("anthropic:") {
+        String::new()
     } else {
         return Err(CrabClawError::Config(
             "missing API_KEY. Set API_KEY env var, or run `crabclaw auth login` for OAuth."
@@ -118,16 +141,6 @@ pub fn resolve_config(
         Some(&DEFAULT_API_BASE.to_string()),
     ])
     .unwrap_or_else(|| DEFAULT_API_BASE.to_string());
-
-    let model = first_present([
-        cli_overrides.model.as_ref(),
-        env_vars.get(&profiled_model),
-        env_vars.get(MODEL_KEY),
-        dotenv_vars.get(&profiled_model),
-        dotenv_vars.get(MODEL_KEY),
-        Some(&DEFAULT_MODEL.to_string()),
-    ])
-    .unwrap_or_else(|| DEFAULT_MODEL.to_string());
 
     let system_prompt = first_present([
         cli_overrides.system_prompt.as_ref(),
@@ -183,6 +196,7 @@ pub fn resolve_config(
     Ok(AppConfig {
         profile: profile_name,
         api_key,
+        anthropic_access_token,
         api_base,
         model,
         system_prompt,
@@ -304,6 +318,7 @@ mod tests {
 
         assert_eq!(config.profile, "dev");
         assert_eq!(config.api_key, "cli-key");
+        assert!(config.anthropic_access_token.is_none());
         assert_eq!(config.api_base, "https://env-profile.example.com");
         assert_eq!(config.model, "cli-model");
     }
@@ -342,6 +357,82 @@ mod tests {
         let config = resolve_config(None, &overrides, &env_vars, &HashMap::new()).unwrap();
         assert_eq!(config.api_base, "https://api.example.com");
         assert_eq!(config.model, "openai:gpt-4o");
+        assert!(config.anthropic_access_token.is_none());
+    }
+
+    #[test]
+    fn resolves_anthropic_token_with_profile_precedence() {
+        let mut env_vars = HashMap::new();
+        env_vars.insert("API_KEY".to_string(), "key".to_string());
+        env_vars.insert(
+            "PROFILE_DEV_ANTHROPIC_ACCESS_TOKEN".to_string(),
+            "env-profile-token".to_string(),
+        );
+        env_vars.insert(
+            "ANTHROPIC_ACCESS_TOKEN".to_string(),
+            "env-base-token".to_string(),
+        );
+
+        let mut dotenv_vars = HashMap::new();
+        dotenv_vars.insert(
+            "PROFILE_DEV_ANTHROPIC_ACCESS_TOKEN".to_string(),
+            "dotenv-profile-token".to_string(),
+        );
+
+        let config = resolve_config(
+            Some("dev"),
+            &CliConfigOverrides::default(),
+            &env_vars,
+            &dotenv_vars,
+        )
+        .unwrap();
+        assert_eq!(
+            config.anthropic_access_token.as_deref(),
+            Some("env-profile-token")
+        );
+    }
+
+    #[test]
+    fn anthropic_model_accepts_oauth_token_without_api_key() {
+        let mut env_vars = HashMap::new();
+        env_vars.insert(
+            "MODEL".to_string(),
+            "anthropic:claude-sonnet-4-20250514".to_string(),
+        );
+        env_vars.insert(
+            "ANTHROPIC_ACCESS_TOKEN".to_string(),
+            "anthropic-oauth-token".to_string(),
+        );
+
+        let config = resolve_config(
+            None,
+            &CliConfigOverrides::default(),
+            &env_vars,
+            &HashMap::new(),
+        )
+        .unwrap();
+        assert_eq!(config.model, "anthropic:claude-sonnet-4-20250514");
+        assert_eq!(
+            config.anthropic_access_token.as_deref(),
+            Some("anthropic-oauth-token")
+        );
+    }
+
+    #[test]
+    fn anthropic_token_absence_does_not_affect_openai_config() {
+        let mut env_vars = HashMap::new();
+        env_vars.insert("API_KEY".to_string(), "key".to_string());
+        env_vars.insert("MODEL".to_string(), "openai:gpt-4o".to_string());
+
+        let config = resolve_config(
+            None,
+            &CliConfigOverrides::default(),
+            &env_vars,
+            &HashMap::new(),
+        )
+        .unwrap();
+        assert_eq!(config.api_key, "key");
+        assert!(config.anthropic_access_token.is_none());
     }
 
     #[test]

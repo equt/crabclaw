@@ -35,6 +35,26 @@ struct NonStandardError {
 const DEFAULT_TIMEOUT_SECS: u64 = 60;
 const MAX_RETRIES: usize = 3;
 const INITIAL_RETRY_DELAY_MS: u64 = 1000;
+const ANTHROPIC_API_VERSION: &str = "2023-06-01";
+const ANTHROPIC_OAUTH_USER_AGENT: &str =
+    "ai-sdk/anthropic/2.0.50 ai-sdk/provider-utils/3.0.18 runtime/bun/1.3.5";
+
+fn anthropic_messages_url(config: &AppConfig) -> String {
+    format!("{}/v1/messages", config.api_base.trim_end_matches('/'))
+}
+
+fn anthropic_access_token(config: &AppConfig) -> Result<&str> {
+    config
+        .anthropic_access_token
+        .as_deref()
+        .map(str::trim)
+        .filter(|token| !token.is_empty())
+        .ok_or_else(|| {
+            CrabClawError::Config(
+                "anthropic models require ANTHROPIC_ACCESS_TOKEN (or PROFILE_<PROFILE>_ANTHROPIC_ACCESS_TOKEN).".to_string(),
+            )
+        })
+}
 
 fn merged_system_prompt(messages: &[crate::llm::api_types::Message]) -> Option<String> {
     let mut combined = String::new();
@@ -209,7 +229,8 @@ async fn send_anthropic_request(
     request: &ChatRequest,
     model: &str,
 ) -> Result<ChatResponse> {
-    let url = format!("{}/v1/messages", config.api_base.trim_end_matches('/'));
+    let url = anthropic_messages_url(config);
+    let access_token = anthropic_access_token(config)?;
     debug!(url = %url, model = %model, "sending anthropic chat request");
 
     let mut system_text = String::new();
@@ -254,8 +275,9 @@ async fn send_anthropic_request(
 
     let response = client
         .post(&url)
-        .header("x-api-key", &config.api_key)
-        .header("anthropic-version", "2023-06-01")
+        .header("Authorization", format!("Bearer {access_token}"))
+        .header("User-Agent", ANTHROPIC_OAUTH_USER_AGENT)
+        .header("anthropic-version", ANTHROPIC_API_VERSION)
         .header("Content-Type", "application/json")
         .json(&anth_req)
         .send()
@@ -303,7 +325,8 @@ async fn send_anthropic_request_stream(
     request: &ChatRequest,
     model: &str,
 ) -> Result<mpsc::UnboundedReceiver<Result<StreamChunk>>> {
-    let url = format!("{}/v1/messages", config.api_base.trim_end_matches('/'));
+    let url = anthropic_messages_url(config);
+    let access_token = anthropic_access_token(config)?;
     debug!(url = %url, model = %model, "sending anthropic chat streaming request");
 
     let mut system_text = String::new();
@@ -345,8 +368,9 @@ async fn send_anthropic_request_stream(
 
     let response = client
         .post(&url)
-        .header("x-api-key", &config.api_key)
-        .header("anthropic-version", "2023-06-01")
+        .header("Authorization", format!("Bearer {access_token}"))
+        .header("User-Agent", ANTHROPIC_OAUTH_USER_AGENT)
+        .header("anthropic-version", ANTHROPIC_API_VERSION)
         .header("Content-Type", "application/json")
         .json(&json_val)
         .send()
@@ -722,14 +746,32 @@ mod tests {
     use crate::llm::api_types::{
         ChatRequest, Choice, Message, StreamChunk, ToolCall, ToolCallFunction,
     };
+    use mockito::Matcher;
     use tokio::sync::mpsc;
 
     fn test_config(api_base: &str) -> AppConfig {
         AppConfig {
             profile: "test".to_string(),
             api_key: "test-key".to_string(),
+            anthropic_access_token: None,
             api_base: api_base.to_string(),
             model: "openai:test-model".to_string(),
+            system_prompt: None,
+            telegram_token: None,
+            telegram_allow_from: vec![],
+            telegram_allow_chats: vec![],
+            telegram_proxy: None,
+            max_context_messages: 50,
+        }
+    }
+
+    fn test_anthropic_config(api_base: &str, anthropic_access_token: Option<&str>) -> AppConfig {
+        AppConfig {
+            profile: "test".to_string(),
+            api_key: "unused-api-key".to_string(),
+            anthropic_access_token: anthropic_access_token.map(str::to_string),
+            api_base: api_base.to_string(),
+            model: "anthropic:test-model".to_string(),
             system_prompt: None,
             telegram_token: None,
             telegram_allow_from: vec![],
@@ -986,6 +1028,110 @@ mod tests {
             other => panic!("expected Api error, got: {other}"),
         }
         mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn anthropic_request_uses_bearer_auth_and_omits_api_key_header() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/v1/messages")
+            .match_header("authorization", "Bearer anthropic-oauth-token")
+            .match_header("user-agent", ANTHROPIC_OAUTH_USER_AGENT)
+            .match_header("x-api-key", Matcher::Missing)
+            .match_header("anthropic-version", ANTHROPIC_API_VERSION)
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{
+                    "id": "msg_123",
+                    "content": [{"type": "text", "text": "Hello from Claude"}],
+                    "stop_reason": "end_turn",
+                    "usage": {"input_tokens": 4, "output_tokens": 5}
+                }"#,
+            )
+            .create_async()
+            .await;
+
+        let config = test_anthropic_config(&server.url(), Some("anthropic-oauth-token"));
+        let request = ChatRequest {
+            model: "anthropic:test-model".to_string(),
+            messages: vec![Message::user("hello")],
+            max_tokens: Some(128),
+            tools: None,
+        };
+
+        let response = send_chat_request(&config, &request)
+            .await
+            .expect("anthropic request should succeed");
+        assert_eq!(response.assistant_content(), Some("Hello from Claude"));
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn anthropic_stream_uses_bearer_auth_and_omits_api_key_header() {
+        let mut server = mockito::Server::new_async().await;
+        let body = concat!(
+            "event: content_block_start\n",
+            "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"Hello\"}}\n\n",
+            "event: content_block_delta\n",
+            "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\" world\"}}\n\n",
+            "event: message_stop\n",
+            "data: {\"type\":\"message_stop\"}\n\n"
+        );
+
+        let mock = server
+            .mock("POST", "/v1/messages")
+            .match_header("authorization", "Bearer anthropic-oauth-token")
+            .match_header("user-agent", ANTHROPIC_OAUTH_USER_AGENT)
+            .match_header("x-api-key", Matcher::Missing)
+            .match_header("anthropic-version", ANTHROPIC_API_VERSION)
+            .with_status(200)
+            .with_header("content-type", "text/event-stream")
+            .with_body(body)
+            .create_async()
+            .await;
+
+        let config = test_anthropic_config(&server.url(), Some("anthropic-oauth-token"));
+        let request = ChatRequest {
+            model: "anthropic:test-model".to_string(),
+            messages: vec![Message::user("hello")],
+            max_tokens: None,
+            tools: None,
+        };
+
+        let rx = send_chat_request_stream(&config, &request)
+            .await
+            .expect("anthropic stream request should succeed");
+        let chunks = collect_stream_chunks(rx).await;
+
+        assert_eq!(
+            chunks,
+            vec![
+                StreamChunk::Content("Hello".to_string()),
+                StreamChunk::Content(" world".to_string()),
+                StreamChunk::Done
+            ]
+        );
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn anthropic_request_requires_access_token() {
+        let config = test_anthropic_config("https://api.example.com", None);
+        let request = ChatRequest {
+            model: "anthropic:test-model".to_string(),
+            messages: vec![Message::user("hello")],
+            max_tokens: None,
+            tools: None,
+        };
+
+        let err = send_chat_request(&config, &request).await.unwrap_err();
+        match err {
+            CrabClawError::Config(msg) => {
+                assert!(msg.contains("ANTHROPIC_ACCESS_TOKEN"), "msg: {msg}")
+            }
+            other => panic!("expected Config error, got: {other}"),
+        }
     }
 
     #[tokio::test]

@@ -4,6 +4,7 @@ pub fn openai_config(api_base: &str) -> AppConfig {
     AppConfig {
         profile: "test".to_string(),
         api_key: "test-key".to_string(),
+        anthropic_access_token: None,
         api_base: api_base.to_string(),
         model: "openai:test-model".to_string(),
         system_prompt: None,
@@ -18,5 +19,6 @@ pub fn openai_config(api_base: &str) -> AppConfig {
 pub fn anthropic_config(api_base: &str) -> AppConfig {
     let mut cfg = openai_config(api_base);
     cfg.model = "anthropic:test-model".to_string();
+    cfg.anthropic_access_token = Some("anthropic-test-token".to_string());
     cfg
 }

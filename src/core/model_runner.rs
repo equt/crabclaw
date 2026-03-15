@@ -295,6 +295,7 @@ mod tests {
         AppConfig {
             profile: String::new(),
             api_key: String::new(),
+            anthropic_access_token: None,
             api_base: String::new(),
             model: String::new(),
             system_prompt: None,

@@ -53,10 +53,10 @@ CrabClaw supports three provider modes. All models **must** have a provider pref
 | Prefix | Provider | API Format | Auth | Example |
 |--------|----------|-----------|------|---------------|
 | `openai:` | OpenAI-compatible | Chat Completions | `API_KEY` | `openai:gpt-4o` |
-| `anthropic:` | Anthropic | Messages API | `API_KEY` | `anthropic:claude-sonnet-4-20250514` |
+| `anthropic:` | Anthropic | Messages API | `ANTHROPIC_ACCESS_TOKEN` | `anthropic:claude-sonnet-4-20250514` |
 | `codex:` | OpenAI Codex | Responses API | OAuth | `codex:gpt-5.3-codex` |
 
-### Option A: API Key (OpenAI-compatible / Anthropic)
+### Option A: API Key (OpenAI-compatible)
 
 Works with OpenAI, OpenRouter, GLM, DeepSeek, or any OpenAI-compatible endpoint.
 
@@ -64,10 +64,24 @@ Works with OpenAI, OpenRouter, GLM, DeepSeek, or any OpenAI-compatible endpoint.
 # .env.local
 API_KEY=sk-xxx
 BASE_URL=https://api.openai.com/v1      # or https://openrouter.ai/api/v1
-MODEL=openai:gpt-4o                     # or anthropic:claude-sonnet-4-20250514
+MODEL=openai:gpt-4o
 ```
 
-### Option B: OAuth + Codex (ChatGPT Plus/Pro subscription)
+### Option B: Anthropic OAuth token
+
+Anthropic models read a dedicated bearer token and do not use `API_KEY`.
+
+```bash
+# .env.local
+ANTHROPIC_ACCESS_TOKEN=anthropic-oauth-token
+BASE_URL=https://api.anthropic.com
+MODEL=anthropic:claude-sonnet-4-20250514
+```
+
+`crabclaw auth login` does not provision Anthropic tokens in this release; supply the
+token out-of-band.
+
+### Option C: OAuth + Codex (ChatGPT Plus/Pro subscription)
 
 Uses your ChatGPT subscription quota — **no API credits needed**.
 
@@ -103,6 +117,12 @@ Settings resolve in this order (first wins):
 4. `.env.local` file
 5. OAuth tokens (fallback when no `API_KEY` is set)
 6. Built-in defaults (`MODEL=openai:gpt-4o`)
+
+Anthropic token lookup follows the same profile-aware pattern:
+
+1. `PROFILE_<NAME>_ANTHROPIC_ACCESS_TOKEN`
+2. `ANTHROPIC_ACCESS_TOKEN`
+3. matching `.env.local` values
 
 ### Reasoning Effort (Codex models)
 

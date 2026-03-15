@@ -66,6 +66,7 @@ mod tests {
         Arc::new(AppConfig {
             profile: "test".to_string(),
             api_key: "key".to_string(),
+            anthropic_access_token: None,
             api_base: "https://api.example.com".to_string(),
             model: "openai:test-model".to_string(),
             system_prompt: None,
