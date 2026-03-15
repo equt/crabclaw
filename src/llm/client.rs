@@ -38,6 +38,9 @@ const INITIAL_RETRY_DELAY_MS: u64 = 1000;
 const ANTHROPIC_API_VERSION: &str = "2023-06-01";
 const ANTHROPIC_OAUTH_USER_AGENT: &str =
     "ai-sdk/anthropic/2.0.50 ai-sdk/provider-utils/3.0.18 runtime/bun/1.3.5";
+const ANTHROPIC_OAUTH_BETA: &str =
+    "claude-code-20250219,oauth-2025-04-20,fine-grained-tool-streaming-2025-05-14";
+const ANTHROPIC_OAUTH_X_APP: &str = "cli";
 
 fn anthropic_messages_url(config: &AppConfig) -> String {
     format!("{}/v1/messages", config.api_base.trim_end_matches('/'))
@@ -275,9 +278,12 @@ async fn send_anthropic_request(
 
     let response = client
         .post(&url)
+        .header("accept", "application/json")
         .header("Authorization", format!("Bearer {access_token}"))
         .header("User-Agent", ANTHROPIC_OAUTH_USER_AGENT)
+        .header("anthropic-beta", ANTHROPIC_OAUTH_BETA)
         .header("anthropic-version", ANTHROPIC_API_VERSION)
+        .header("x-app", ANTHROPIC_OAUTH_X_APP)
         .header("Content-Type", "application/json")
         .json(&anth_req)
         .send()
@@ -368,9 +374,12 @@ async fn send_anthropic_request_stream(
 
     let response = client
         .post(&url)
+        .header("accept", "application/json")
         .header("Authorization", format!("Bearer {access_token}"))
         .header("User-Agent", ANTHROPIC_OAUTH_USER_AGENT)
+        .header("anthropic-beta", ANTHROPIC_OAUTH_BETA)
         .header("anthropic-version", ANTHROPIC_API_VERSION)
+        .header("x-app", ANTHROPIC_OAUTH_X_APP)
         .header("Content-Type", "application/json")
         .json(&json_val)
         .send()
@@ -1035,10 +1044,13 @@ mod tests {
         let mut server = mockito::Server::new_async().await;
         let mock = server
             .mock("POST", "/v1/messages")
+            .match_header("accept", "application/json")
             .match_header("authorization", "Bearer anthropic-oauth-token")
             .match_header("user-agent", ANTHROPIC_OAUTH_USER_AGENT)
+            .match_header("anthropic-beta", ANTHROPIC_OAUTH_BETA)
             .match_header("x-api-key", Matcher::Missing)
             .match_header("anthropic-version", ANTHROPIC_API_VERSION)
+            .match_header("x-app", ANTHROPIC_OAUTH_X_APP)
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(
@@ -1081,10 +1093,13 @@ mod tests {
 
         let mock = server
             .mock("POST", "/v1/messages")
+            .match_header("accept", "application/json")
             .match_header("authorization", "Bearer anthropic-oauth-token")
             .match_header("user-agent", ANTHROPIC_OAUTH_USER_AGENT)
+            .match_header("anthropic-beta", ANTHROPIC_OAUTH_BETA)
             .match_header("x-api-key", Matcher::Missing)
             .match_header("anthropic-version", ANTHROPIC_API_VERSION)
+            .match_header("x-app", ANTHROPIC_OAUTH_X_APP)
             .with_status(200)
             .with_header("content-type", "text/event-stream")
             .with_body(body)
