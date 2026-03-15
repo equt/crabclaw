@@ -452,7 +452,7 @@ async fn send_anthropic_request_stream(
                                                 let _ = tx.send(Ok(StreamChunk::ToolCallStart {
                                                     index,
                                                     id,
-                                                    name,
+                                                    name: crate::llm::api_types::decode_anthropic_tool_name(&name),
                                                 }));
                                             }
                                         },
@@ -1147,6 +1147,102 @@ mod tests {
             }
             other => panic!("expected Config error, got: {other}"),
         }
+    }
+
+    #[tokio::test]
+    async fn anthropic_request_encodes_tool_names_in_request_body() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/v1/messages")
+            .match_body(Matcher::Regex("\"name\":\"shell__exec\"".to_string()))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{
+                    "id": "msg_456",
+                    "content": [{"type": "text", "text": "done"}],
+                    "stop_reason": "end_turn"
+                }"#,
+            )
+            .create_async()
+            .await;
+
+        let config = test_anthropic_config(&server.url(), Some("anthropic-oauth-token"));
+        let request = ChatRequest {
+            model: "anthropic:test-model".to_string(),
+            messages: vec![Message::user("hello")],
+            max_tokens: Some(64),
+            tools: Some(vec![crate::llm::api_types::ToolDefinition {
+                tool_type: "function".to_string(),
+                function: crate::llm::api_types::FunctionDefinition {
+                    name: "shell.exec".to_string(),
+                    description: "Run shell".to_string(),
+                    parameters: serde_json::json!({
+                        "type": "object",
+                        "properties": {
+                            "command": { "type": "string" }
+                        }
+                    }),
+                },
+            }]),
+        };
+
+        let response = send_chat_request(&config, &request)
+            .await
+            .expect("anthropic request should succeed");
+        assert_eq!(response.assistant_content(), Some("done"));
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn anthropic_stream_decodes_tool_call_names() {
+        let mut server = mockito::Server::new_async().await;
+        let body = concat!(
+            "event: content_block_start\n",
+            "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_1\",\"name\":\"shell__exec\"}}\n\n",
+            "event: content_block_delta\n",
+            "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"command\\\":\\\"echo ok\\\"}\"}}\n\n",
+            "event: message_stop\n",
+            "data: {\"type\":\"message_stop\"}\n\n"
+        );
+
+        let mock = server
+            .mock("POST", "/v1/messages")
+            .with_status(200)
+            .with_header("content-type", "text/event-stream")
+            .with_body(body)
+            .create_async()
+            .await;
+
+        let config = test_anthropic_config(&server.url(), Some("anthropic-oauth-token"));
+        let request = ChatRequest {
+            model: "anthropic:test-model".to_string(),
+            messages: vec![Message::user("hello")],
+            max_tokens: None,
+            tools: None,
+        };
+
+        let rx = send_chat_request_stream(&config, &request)
+            .await
+            .expect("anthropic stream request should succeed");
+        let chunks = collect_stream_chunks(rx).await;
+
+        assert_eq!(
+            chunks,
+            vec![
+                StreamChunk::ToolCallStart {
+                    index: 0,
+                    id: "toolu_1".to_string(),
+                    name: "shell.exec".to_string(),
+                },
+                StreamChunk::ToolCallArgument {
+                    index: 0,
+                    text: "{\"command\":\"echo ok\"}".to_string(),
+                },
+                StreamChunk::Done,
+            ]
+        );
+        mock.assert_async().await;
     }
 
     #[tokio::test]

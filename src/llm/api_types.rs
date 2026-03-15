@@ -259,10 +259,18 @@ pub struct AnthropicToolDefinition {
     pub input_schema: serde_json::Value,
 }
 
+fn encode_anthropic_tool_name(name: &str) -> String {
+    name.replace('.', "__")
+}
+
+pub(crate) fn decode_anthropic_tool_name(name: &str) -> String {
+    name.replace("__", ".")
+}
+
 impl From<&ToolDefinition> for AnthropicToolDefinition {
     fn from(tool: &ToolDefinition) -> Self {
         Self {
-            name: tool.function.name.clone(),
+            name: encode_anthropic_tool_name(&tool.function.name),
             description: tool.function.description.clone(),
             input_schema: tool.function.parameters.clone(),
         }
@@ -359,7 +367,7 @@ pub fn convert_messages_for_anthropic(messages: &[Message]) -> Vec<AnthropicMess
                         .unwrap_or(serde_json::json!({}));
                     blocks.push(AnthropicContentItem::ToolUse {
                         id: tc.id.clone(),
-                        name: tc.function.name.clone(),
+                        name: encode_anthropic_tool_name(&tc.function.name),
                         input,
                     });
                 }
@@ -534,7 +542,7 @@ impl AnthropicResponse {
                         id: id.clone(),
                         call_type: "function".to_string(),
                         function: ToolCallFunction {
-                            name: name.clone(),
+                            name: decode_anthropic_tool_name(name),
                             arguments,
                         },
                     });
@@ -738,5 +746,68 @@ mod tests {
         assert_eq!(usage.prompt_tokens, 0);
         assert_eq!(usage.completion_tokens, 0);
         assert_eq!(usage.total_tokens, 42);
+    }
+
+    #[test]
+    fn anthropic_tool_definition_encodes_dotted_name() {
+        let tool = ToolDefinition {
+            tool_type: "function".to_string(),
+            function: FunctionDefinition {
+                name: "shell.exec".to_string(),
+                description: "Run a shell command".to_string(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "command": { "type": "string" }
+                    }
+                }),
+            },
+        };
+
+        let anthropic = AnthropicToolDefinition::from(&tool);
+        assert_eq!(anthropic.name, "shell__exec");
+    }
+
+    #[test]
+    fn convert_messages_for_anthropic_encodes_tool_use_names() {
+        let messages = vec![Message::assistant_with_tool_calls(vec![ToolCall {
+            id: "call_1".to_string(),
+            call_type: "function".to_string(),
+            function: ToolCallFunction {
+                name: "file.write".to_string(),
+                arguments: "{\"path\":\"a.txt\"}".to_string(),
+            },
+        }])];
+
+        let converted = convert_messages_for_anthropic(&messages);
+        match &converted[0].content {
+            AnthropicContent::Blocks(blocks) => match &blocks[0] {
+                AnthropicContentItem::ToolUse { name, .. } => {
+                    assert_eq!(name, "file__write");
+                }
+                other => panic!("expected tool use block, got: {other:?}"),
+            },
+            other => panic!("expected block content, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn anthropic_response_decodes_tool_use_names() {
+        let response = AnthropicResponse {
+            id: Some("msg_123".to_string()),
+            content: vec![AnthropicContentBlock {
+                block_type: "tool_use".to_string(),
+                text: None,
+                id: Some("toolu_123".to_string()),
+                name: Some("shell__exec".to_string()),
+                input: Some(serde_json::json!({"command":"echo ok"})),
+            }],
+            stop_reason: Some("tool_use".to_string()),
+            usage: None,
+        };
+
+        let chat = response.into_chat_response();
+        let tool_calls = chat.tool_calls().expect("tool calls");
+        assert_eq!(tool_calls[0].function.name, "shell.exec");
     }
 }
