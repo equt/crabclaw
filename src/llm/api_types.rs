@@ -267,6 +267,51 @@ pub(crate) fn decode_anthropic_tool_name(name: &str) -> String {
     name.replace("__", ".")
 }
 
+fn normalize_anthropic_tool_call_id(id: &str) -> String {
+    let normalized: String = id
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .take(64)
+        .collect();
+
+    if normalized.is_empty() {
+        "tool_call".to_string()
+    } else {
+        normalized
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AnthropicSystemBlock {
+    #[serde(rename = "type")]
+    pub block_type: String,
+    pub text: String,
+}
+
+pub fn build_anthropic_system_blocks(
+    system_text: Option<&str>,
+) -> Option<Vec<AnthropicSystemBlock>> {
+    let mut blocks = vec![AnthropicSystemBlock {
+        block_type: "text".to_string(),
+        text: "You are Claude Code, Anthropic's official CLI for Claude.".to_string(),
+    }];
+
+    if let Some(system_text) = system_text.map(str::trim).filter(|text| !text.is_empty()) {
+        blocks.push(AnthropicSystemBlock {
+            block_type: "text".to_string(),
+            text: system_text.to_string(),
+        });
+    }
+
+    Some(blocks)
+}
+
 impl From<&ToolDefinition> for AnthropicToolDefinition {
     fn from(tool: &ToolDefinition) -> Self {
         Self {
@@ -284,7 +329,7 @@ pub struct AnthropicRequest {
     pub messages: Vec<AnthropicMessage>,
     pub max_tokens: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub system: Option<String>,
+    pub system: Option<Vec<AnthropicSystemBlock>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tools: Option<Vec<AnthropicToolDefinition>>,
 }
@@ -366,7 +411,7 @@ pub fn convert_messages_for_anthropic(messages: &[Message]) -> Vec<AnthropicMess
                     let input: serde_json::Value = serde_json::from_str(&tc.function.arguments)
                         .unwrap_or(serde_json::json!({}));
                     blocks.push(AnthropicContentItem::ToolUse {
-                        id: tc.id.clone(),
+                        id: normalize_anthropic_tool_call_id(&tc.id),
                         name: encode_anthropic_tool_name(&tc.function.name),
                         input,
                     });
@@ -395,7 +440,7 @@ pub fn convert_messages_for_anthropic(messages: &[Message]) -> Vec<AnthropicMess
                 let tool_msg = &messages[i];
                 if let Some(tool_call_id) = &tool_msg.tool_call_id {
                     blocks.push(AnthropicContentItem::ToolResult {
-                        tool_use_id: tool_call_id.clone(),
+                        tool_use_id: normalize_anthropic_tool_call_id(tool_call_id),
                         content: tool_msg.content.clone(),
                     });
                 }
@@ -771,7 +816,7 @@ mod tests {
     #[test]
     fn convert_messages_for_anthropic_encodes_tool_use_names() {
         let messages = vec![Message::assistant_with_tool_calls(vec![ToolCall {
-            id: "call_1".to_string(),
+            id: "call.1".to_string(),
             call_type: "function".to_string(),
             function: ToolCallFunction {
                 name: "file.write".to_string(),
@@ -782,13 +827,25 @@ mod tests {
         let converted = convert_messages_for_anthropic(&messages);
         match &converted[0].content {
             AnthropicContent::Blocks(blocks) => match &blocks[0] {
-                AnthropicContentItem::ToolUse { name, .. } => {
+                AnthropicContentItem::ToolUse { id, name, .. } => {
+                    assert_eq!(id, "call_1");
                     assert_eq!(name, "file__write");
                 }
                 other => panic!("expected tool use block, got: {other:?}"),
             },
             other => panic!("expected block content, got: {other:?}"),
         }
+    }
+
+    #[test]
+    fn build_anthropic_system_blocks_includes_claude_code_identity() {
+        let blocks = build_anthropic_system_blocks(Some("Follow repo policy")).expect("blocks");
+        assert_eq!(blocks.len(), 2);
+        assert_eq!(
+            blocks[0].text,
+            "You are Claude Code, Anthropic's official CLI for Claude."
+        );
+        assert_eq!(blocks[1].text, "Follow repo policy");
     }
 
     #[test]
@@ -809,5 +866,20 @@ mod tests {
         let chat = response.into_chat_response();
         let tool_calls = chat.tool_calls().expect("tool calls");
         assert_eq!(tool_calls[0].function.name, "shell.exec");
+    }
+
+    #[test]
+    fn convert_messages_for_anthropic_normalizes_tool_result_ids() {
+        let messages = vec![Message::tool("call.with spaces", "done")];
+        let converted = convert_messages_for_anthropic(&messages);
+        match &converted[0].content {
+            AnthropicContent::Blocks(blocks) => match &blocks[0] {
+                AnthropicContentItem::ToolResult { tool_use_id, .. } => {
+                    assert_eq!(tool_use_id, "call_with_spaces");
+                }
+                other => panic!("expected tool result block, got: {other:?}"),
+            },
+            other => panic!("expected block content, got: {other:?}"),
+        }
     }
 }

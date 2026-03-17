@@ -37,11 +37,11 @@ const DEFAULT_TIMEOUT_SECS: u64 = 60;
 const MAX_RETRIES: usize = 3;
 const INITIAL_RETRY_DELAY_MS: u64 = 1000;
 const ANTHROPIC_API_VERSION: &str = "2023-06-01";
-const ANTHROPIC_OAUTH_USER_AGENT: &str =
-    "ai-sdk/anthropic/2.0.50 ai-sdk/provider-utils/3.0.18 runtime/bun/1.3.5";
+const ANTHROPIC_OAUTH_USER_AGENT: &str = "claude-cli/2.1.75";
 const ANTHROPIC_OAUTH_BETA: &str =
     "claude-code-20250219,oauth-2025-04-20,fine-grained-tool-streaming-2025-05-14";
 const ANTHROPIC_OAUTH_X_APP: &str = "cli";
+const ANTHROPIC_DANGEROUS_DIRECT_BROWSER_ACCESS: &str = "true";
 
 fn anthropic_messages_url(config: &AppConfig) -> String {
     format!("{}/v1/messages", config.api_base.trim_end_matches('/'))
@@ -244,15 +244,7 @@ async fn send_anthropic_request(
     let access_token = anthropic_access_token(config)?;
     debug!(url = %url, model = %model, "sending anthropic chat request");
 
-    let mut system_text = String::new();
-    for msg in &request.messages {
-        if msg.role == "system" {
-            if !system_text.is_empty() {
-                system_text.push('\n');
-            }
-            system_text.push_str(&msg.content);
-        }
-    }
+    let system_text = merged_system_prompt(&request.messages);
 
     let messages = crate::llm::api_types::convert_messages_for_anthropic(&request.messages);
 
@@ -266,11 +258,7 @@ async fn send_anthropic_request(
         model: model.to_string(),
         messages,
         max_tokens: request.max_tokens.unwrap_or(4096),
-        system: if system_text.is_empty() {
-            None
-        } else {
-            Some(system_text)
-        },
+        system: crate::llm::api_types::build_anthropic_system_blocks(system_text.as_deref()),
         tools,
     };
 
@@ -292,6 +280,10 @@ async fn send_anthropic_request(
         .header("User-Agent", ANTHROPIC_OAUTH_USER_AGENT)
         .header("anthropic-beta", ANTHROPIC_OAUTH_BETA)
         .header("anthropic-version", ANTHROPIC_API_VERSION)
+        .header(
+            "anthropic-dangerous-direct-browser-access",
+            ANTHROPIC_DANGEROUS_DIRECT_BROWSER_ACCESS,
+        )
         .header("x-app", ANTHROPIC_OAUTH_X_APP)
         .header("Content-Type", "application/json")
         .json(&anth_req)
@@ -344,15 +336,7 @@ async fn send_anthropic_request_stream(
     let access_token = anthropic_access_token(config)?;
     debug!(url = %url, model = %model, "sending anthropic chat streaming request");
 
-    let mut system_text = String::new();
-    for msg in &request.messages {
-        if msg.role == "system" {
-            if !system_text.is_empty() {
-                system_text.push('\n');
-            }
-            system_text.push_str(&msg.content);
-        }
-    }
+    let system_text = merged_system_prompt(&request.messages);
 
     let messages = crate::llm::api_types::convert_messages_for_anthropic(&request.messages);
 
@@ -366,11 +350,7 @@ async fn send_anthropic_request_stream(
         model: model.to_string(),
         messages,
         max_tokens: request.max_tokens.unwrap_or(4096),
-        system: if system_text.is_empty() {
-            None
-        } else {
-            Some(system_text)
-        },
+        system: crate::llm::api_types::build_anthropic_system_blocks(system_text.as_deref()),
         tools,
     };
 
@@ -389,6 +369,10 @@ async fn send_anthropic_request_stream(
         .header("User-Agent", ANTHROPIC_OAUTH_USER_AGENT)
         .header("anthropic-beta", ANTHROPIC_OAUTH_BETA)
         .header("anthropic-version", ANTHROPIC_API_VERSION)
+        .header(
+            "anthropic-dangerous-direct-browser-access",
+            ANTHROPIC_DANGEROUS_DIRECT_BROWSER_ACCESS,
+        )
         .header("x-app", ANTHROPIC_OAUTH_X_APP)
         .header("Content-Type", "application/json")
         .json(&json_val)
@@ -1062,7 +1046,14 @@ mod tests {
             .match_header("anthropic-beta", ANTHROPIC_OAUTH_BETA)
             .match_header("x-api-key", Matcher::Missing)
             .match_header("anthropic-version", ANTHROPIC_API_VERSION)
+            .match_header(
+                "anthropic-dangerous-direct-browser-access",
+                ANTHROPIC_DANGEROUS_DIRECT_BROWSER_ACCESS,
+            )
             .match_header("x-app", ANTHROPIC_OAUTH_X_APP)
+            .match_body(Matcher::Regex(
+                "\"system\":\\[\\{\"type\":\"text\",\"text\":\"You are Claude Code, Anthropic's official CLI for Claude\\.\"\\}\\]".to_string(),
+            ))
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(
@@ -1111,6 +1102,10 @@ mod tests {
             .match_header("anthropic-beta", ANTHROPIC_OAUTH_BETA)
             .match_header("x-api-key", Matcher::Missing)
             .match_header("anthropic-version", ANTHROPIC_API_VERSION)
+            .match_header(
+                "anthropic-dangerous-direct-browser-access",
+                ANTHROPIC_DANGEROUS_DIRECT_BROWSER_ACCESS,
+            )
             .match_header("x-app", ANTHROPIC_OAUTH_X_APP)
             .with_status(200)
             .with_header("content-type", "text/event-stream")
@@ -1203,6 +1198,44 @@ mod tests {
             .await
             .expect("anthropic request should succeed");
         assert_eq!(response.assistant_content(), Some("done"));
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn anthropic_request_wraps_system_prompt_in_claude_code_blocks() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/v1/messages")
+            .match_body(Matcher::Regex(
+                "\"system\":\\[\\{\"type\":\"text\",\"text\":\"You are Claude Code, Anthropic's official CLI for Claude\\.\"\\},\\{\"type\":\"text\",\"text\":\"Follow the repo instructions\"\\}\\]".to_string(),
+            ))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{
+                    "id": "msg_789",
+                    "content": [{"type": "text", "text": "ok"}],
+                    "stop_reason": "end_turn"
+                }"#,
+            )
+            .create_async()
+            .await;
+
+        let config = test_anthropic_config(&server.url(), Some("anthropic-oauth-token"));
+        let request = ChatRequest {
+            model: "anthropic:test-model".to_string(),
+            messages: vec![
+                Message::system("Follow the repo instructions"),
+                Message::user("hello"),
+            ],
+            max_tokens: None,
+            tools: None,
+        };
+
+        let response = send_chat_request(&config, &request)
+            .await
+            .expect("anthropic request should succeed");
+        assert_eq!(response.assistant_content(), Some("ok"));
         mock.assert_async().await;
     }
 
