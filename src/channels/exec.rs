@@ -92,6 +92,8 @@ impl Channel for ExecChannel {
 
             let result = agent.handle_input(&json_val.to_string()).await;
 
+            // The history window controls model-visible context; reset_tape only
+            // keeps the ephemeral exec tape from growing without bound on disk.
             if let Err(e) = agent.reset_tape() {
                 warn!("exec.{}.reset_tape.error: {e}", self.exec_config.name);
             }
