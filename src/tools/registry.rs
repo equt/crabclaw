@@ -365,7 +365,8 @@ pub fn execute_tool(
             format!("Available commands:\n{}", tools.join("\n"))
         }
         "tools" => {
-            let registry = builtin_registry();
+            let mut registry = builtin_registry();
+            register_skills(&mut registry, workspace);
             let rows = registry.compact_rows();
             if rows.is_empty() {
                 "No tools registered.".to_string()
@@ -670,6 +671,24 @@ mod tests {
         let mut reg = builtin_registry();
         register_skills(&mut reg, dir.path());
         assert!(reg.has("skill.my-skill"));
+    }
+
+    #[test]
+    fn execute_tools_lists_discovered_skills() {
+        let dir = tempfile::tempdir().unwrap();
+        let skill_dir = dir.path().join(".agent/skills/my-skill");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: my-skill\ndescription: A test skill\n---\n# Body",
+        )
+        .unwrap();
+
+        let tape = crate::tape::store::TapeStore::open(dir.path(), "test").unwrap();
+        let result = execute_tool("tools", "{}", &tape, dir.path(), &ToolContext::empty());
+
+        assert!(result.contains("skill.my-skill"));
+        assert!(result.contains("A test skill"));
     }
 
     #[test]
