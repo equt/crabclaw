@@ -19,6 +19,14 @@ const TELEGRAM_ALLOW_CHATS_KEY: &str = "TELEGRAM_ALLOW_CHATS";
 const TELEGRAM_PROXY_KEY: &str = "TELEGRAM_PROXY";
 const MAX_CONTEXT_MESSAGES_KEY: &str = "MAX_CONTEXT_MESSAGES";
 const DEFAULT_MAX_CONTEXT_MESSAGES: usize = 50;
+const EXEC_CHANNELS_KEY: &str = "EXEC_CHANNELS";
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ExecChannelConfig {
+    pub name: String,
+    pub command: String,
+    pub prompt: Option<String>,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct AppConfig {
@@ -36,11 +44,18 @@ pub struct AppConfig {
 
     // Tape window config
     pub max_context_messages: usize,
+
+    // Exec channel configs
+    pub exec_channels: Vec<ExecChannelConfig>,
 }
 
 impl AppConfig {
     pub fn telegram_enabled(&self) -> bool {
         self.telegram_token.is_some()
+    }
+
+    pub fn exec_enabled(&self) -> bool {
+        !self.exec_channels.is_empty()
     }
 }
 
@@ -193,6 +208,43 @@ pub fn resolve_config(
     .and_then(|s| s.parse::<usize>().ok())
     .unwrap_or(DEFAULT_MAX_CONTEXT_MESSAGES);
 
+    let exec_channels = {
+        let names_str = first_present([
+            env_vars.get(EXEC_CHANNELS_KEY),
+            dotenv_vars.get(EXEC_CHANNELS_KEY),
+        ]);
+        if let Some(names_str) = names_str {
+            names_str
+                .split(',')
+                .map(|n| n.trim().to_string())
+                .filter(|n| !n.is_empty())
+                .filter_map(|name| {
+                    let upper = name.to_ascii_uppercase();
+                    let cmd_key = format!("EXEC_{upper}_COMMAND");
+                    let prompt_key = format!("EXEC_{upper}_PROMPT");
+                    let command =
+                        first_present([env_vars.get(&cmd_key), dotenv_vars.get(&cmd_key)]);
+                    let command = match command {
+                        Some(c) => c,
+                        None => {
+                            eprintln!("warning: exec channel '{name}' skipped — {cmd_key} not set");
+                            return None;
+                        }
+                    };
+                    let prompt =
+                        first_present([env_vars.get(&prompt_key), dotenv_vars.get(&prompt_key)]);
+                    Some(ExecChannelConfig {
+                        name,
+                        command,
+                        prompt,
+                    })
+                })
+                .collect()
+        } else {
+            vec![]
+        }
+    };
+
     Ok(AppConfig {
         profile: profile_name,
         api_key,
@@ -205,6 +257,7 @@ pub fn resolve_config(
         telegram_allow_chats,
         telegram_proxy,
         max_context_messages,
+        exec_channels,
     })
 }
 
@@ -495,5 +548,83 @@ mod tests {
         assert_eq!(strip_quotes("'world'"), "world");
         assert_eq!(strip_quotes("noquotes"), "noquotes");
         assert_eq!(strip_quotes("\""), "\""); // too short
+    }
+
+    #[test]
+    fn exec_channels_parsed_from_env() {
+        let mut env_vars = HashMap::new();
+        env_vars.insert("API_KEY".to_string(), "key".to_string());
+        env_vars.insert("EXEC_CHANNELS".to_string(), "foo, bar".to_string());
+        env_vars.insert("EXEC_FOO_COMMAND".to_string(), "cmd1 --flag".to_string());
+        env_vars.insert(
+            "EXEC_FOO_PROMPT".to_string(),
+            "Handle foo events".to_string(),
+        );
+        env_vars.insert("EXEC_BAR_COMMAND".to_string(), "cmd2".to_string());
+
+        let config = resolve_config(
+            None,
+            &CliConfigOverrides::default(),
+            &env_vars,
+            &HashMap::new(),
+        )
+        .unwrap();
+
+        assert_eq!(config.exec_channels.len(), 2);
+        assert_eq!(config.exec_channels[0].name, "foo");
+        assert_eq!(config.exec_channels[0].command, "cmd1 --flag");
+        assert_eq!(
+            config.exec_channels[0].prompt.as_deref(),
+            Some("Handle foo events")
+        );
+        assert_eq!(config.exec_channels[1].name, "bar");
+        assert_eq!(config.exec_channels[1].command, "cmd2");
+        assert!(config.exec_channels[1].prompt.is_none());
+    }
+
+    #[test]
+    fn exec_enabled_and_disabled() {
+        let mut env_vars = HashMap::new();
+        env_vars.insert("API_KEY".to_string(), "key".to_string());
+
+        let config = resolve_config(
+            None,
+            &CliConfigOverrides::default(),
+            &env_vars,
+            &HashMap::new(),
+        )
+        .unwrap();
+        assert!(!config.exec_enabled());
+
+        env_vars.insert("EXEC_CHANNELS".to_string(), "test".to_string());
+        env_vars.insert("EXEC_TEST_COMMAND".to_string(), "echo ok".to_string());
+
+        let config = resolve_config(
+            None,
+            &CliConfigOverrides::default(),
+            &env_vars,
+            &HashMap::new(),
+        )
+        .unwrap();
+        assert!(config.exec_enabled());
+    }
+
+    #[test]
+    fn exec_channel_missing_command_is_skipped() {
+        let mut env_vars = HashMap::new();
+        env_vars.insert("API_KEY".to_string(), "key".to_string());
+        env_vars.insert("EXEC_CHANNELS".to_string(), "foo,bar".to_string());
+        // foo has command, bar does not
+        env_vars.insert("EXEC_FOO_COMMAND".to_string(), "cmd1".to_string());
+
+        let config = resolve_config(
+            None,
+            &CliConfigOverrides::default(),
+            &env_vars,
+            &HashMap::new(),
+        )
+        .unwrap();
+        assert_eq!(config.exec_channels.len(), 1);
+        assert_eq!(config.exec_channels[0].name, "foo");
     }
 }

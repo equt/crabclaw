@@ -304,6 +304,7 @@ mod tests {
             telegram_allow_chats: Vec::new(),
             telegram_proxy: None,
             max_context_messages: 50,
+            exec_channels: vec![],
         }
     }
 

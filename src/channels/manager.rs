@@ -3,9 +3,10 @@ use std::sync::Arc;
 use tracing::info;
 
 use crate::channels::base::Channel;
+use crate::channels::exec::ExecChannel;
 use crate::channels::telegram::TelegramChannel;
 use crate::core::config::AppConfig;
-use crate::core::error::Result;
+use crate::core::error::{CrabClawError, Result};
 
 /// Manages channel lifecycles.
 ///
@@ -28,6 +29,15 @@ impl ChannelManager {
             )));
         }
 
+        for exec_cfg in config.exec_channels.iter() {
+            info!("channel_manager.register: exec:{}", exec_cfg.name);
+            channels.push(Box::new(ExecChannel::new(
+                Arc::clone(&config),
+                workspace.to_path_buf(),
+                exec_cfg.clone(),
+            )));
+        }
+
         Self { channels }
     }
 
@@ -35,11 +45,12 @@ impl ChannelManager {
         self.channels.iter().map(|c| c.name()).collect()
     }
 
-    /// Run all registered channels. Blocks until all channels complete or error.
+    /// Run all registered channels concurrently. Blocks until all channels complete or error.
     pub async fn run(&mut self) -> Result<()> {
         if self.channels.is_empty() {
-            return Err(crate::core::error::CrabClawError::Config(
-                "no channels enabled; set TELEGRAM_TOKEN to enable Telegram".to_string(),
+            return Err(CrabClawError::Config(
+                "no channels enabled; set TELEGRAM_TOKEN or EXEC_CHANNELS to enable channels"
+                    .to_string(),
             ));
         }
 
@@ -48,10 +59,16 @@ impl ChannelManager {
             self.enabled_channels()
         );
 
-        // For now, run the first channel (single-channel MVP).
-        // Multi-channel concurrency will be added when Discord is implemented.
-        if let Some(channel) = self.channels.first_mut() {
-            channel.start().await?;
+        let channels = std::mem::take(&mut self.channels);
+        let mut handles = Vec::new();
+        for mut channel in channels {
+            handles.push(tokio::spawn(async move { channel.start().await }));
+        }
+
+        for handle in handles {
+            handle
+                .await
+                .map_err(|e| CrabClawError::Config(format!("channel task panicked: {e}")))??;
         }
 
         Ok(())
@@ -75,6 +92,7 @@ mod tests {
             telegram_allow_chats: vec![],
             telegram_proxy: None,
             max_context_messages: 50,
+            exec_channels: vec![],
         })
     }
 
@@ -90,5 +108,40 @@ mod tests {
         let config = test_config(Some("test-token"));
         let mgr = ChannelManager::new(config, std::path::Path::new("/tmp"));
         assert_eq!(mgr.enabled_channels(), vec!["telegram"]);
+    }
+
+    #[test]
+    fn exec_registered_for_each_named_channel() {
+        use crate::core::config::ExecChannelConfig;
+        let config = Arc::new(AppConfig {
+            profile: "test".to_string(),
+            api_key: "key".to_string(),
+            anthropic_access_token: None,
+            api_base: "https://api.example.com".to_string(),
+            model: "openai:test-model".to_string(),
+            system_prompt: None,
+            telegram_token: None,
+            telegram_allow_from: vec![],
+            telegram_allow_chats: vec![],
+            telegram_proxy: None,
+            max_context_messages: 50,
+            exec_channels: vec![
+                ExecChannelConfig {
+                    name: "foo".to_string(),
+                    command: "echo ok".to_string(),
+                    prompt: None,
+                },
+                ExecChannelConfig {
+                    name: "bar".to_string(),
+                    command: "echo ok".to_string(),
+                    prompt: None,
+                },
+            ],
+        });
+        let mgr = ChannelManager::new(config, std::path::Path::new("/tmp"));
+        let channels = mgr.enabled_channels();
+        assert!(channels.contains(&"exec:foo"));
+        assert!(channels.contains(&"exec:bar"));
+        assert_eq!(channels.len(), 2);
     }
 }

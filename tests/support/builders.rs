@@ -13,6 +13,7 @@ pub fn openai_config(api_base: &str) -> AppConfig {
         telegram_allow_chats: vec![],
         telegram_proxy: None,
         max_context_messages: 50,
+        exec_channels: vec![],
     }
 }
 
