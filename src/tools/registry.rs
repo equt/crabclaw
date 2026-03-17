@@ -1,42 +1,14 @@
 use std::collections::BTreeMap;
-use std::sync::Arc;
 
 use serde::Serialize;
 
-use crate::tools::schedule::{AgentRunner, Notifier};
-
 /// Execution context passed to tools during a model turn.
-///
-/// Carries channel-specific capabilities (e.g. notification delivery,
-/// agent execution) so each tool invocation has access to its session context.
-/// Inspired by Bub's context-bound callback pattern.
 #[derive(Clone, Default)]
-pub struct ToolContext {
-    /// Optional notification callback for the current session.
-    /// When set, schedule jobs capture this to deliver reminders
-    /// back to the originating channel (e.g. Telegram chat).
-    pub notifier: Option<Notifier>,
-    /// Optional agent runner for scheduled agent-mode jobs.
-    /// When set, schedule jobs can run the full agent pipeline
-    /// (LLM + tools) and deliver results on fire.
-    pub agent_runner: Option<AgentRunner>,
-}
+pub struct ToolContext;
 
 impl ToolContext {
-    /// Create an empty context (no notification capability).
     pub fn empty() -> Self {
-        Self {
-            notifier: None,
-            agent_runner: None,
-        }
-    }
-
-    /// Create a context with a notification callback.
-    pub fn with_notifier<F: Fn(String) + Send + Sync + 'static>(f: F) -> Self {
-        Self {
-            notifier: Some(Arc::new(f)),
-            agent_runner: None,
-        }
+        Self
     }
 }
 
@@ -286,52 +258,6 @@ pub fn builtin_tool_specs() -> Vec<BuiltinToolSpec> {
                 "required": ["query"]
             }),
         },
-        BuiltinToolSpec {
-            name: "schedule.add",
-            description: "Schedule a reminder. Specify after_seconds (one-shot) or interval_seconds (repeating).",
-            parameters: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "message": {
-                        "type": "string",
-                        "description": "For 'reminder' mode: the text to deliver. For 'agent' mode: the prompt/task that the AI agent will execute (e.g. 'Fetch top 20 HackerNews posts and summarize them in Chinese')."
-                    },
-                    "after_seconds": {
-                        "type": "integer",
-                        "description": "Fire once after this many seconds (one-shot timer)"
-                    },
-                    "interval_seconds": {
-                        "type": "integer",
-                        "description": "Fire repeatedly at this interval in seconds"
-                    },
-                    "mode": {
-                        "type": "string",
-                        "enum": ["reminder", "agent"],
-                        "description": "IMPORTANT: Use 'agent' when the task requires action (web fetching, analysis, summarization, etc.). Use 'reminder' only for simple text notifications like 'drink water'. Default is 'reminder'."
-                    }
-                },
-                "required": ["message"]
-            }),
-        },
-        BuiltinToolSpec {
-            name: "schedule.list",
-            description: "List all active scheduled jobs.",
-            parameters: empty_tool_parameters(),
-        },
-        BuiltinToolSpec {
-            name: "schedule.remove",
-            description: "Remove a scheduled job by its ID.",
-            parameters: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "job_id": {
-                        "type": "string",
-                        "description": "The ID of the job to remove"
-                    }
-                },
-                "required": ["job_id"]
-            }),
-        },
     ]
 }
 
@@ -407,14 +333,12 @@ pub fn tool_parameters(name: &str) -> serde_json::Value {
 /// Execute a tool by name and return the result as a string.
 ///
 /// Supports builtin tools, `shell.exec`, and skill tools.
-/// The `ctx` parameter carries session-specific context (e.g. notification
-/// callbacks for schedule jobs).
 pub fn execute_tool(
     name: &str,
     args: &str,
     tape: &crate::tape::store::TapeStore,
     workspace: &std::path::Path,
-    ctx: &ToolContext,
+    _ctx: &ToolContext,
 ) -> String {
     match name {
         "tape.info" => {
@@ -550,50 +474,6 @@ pub fn execute_tool(
                 return "Error: 'query' argument is required.".to_string();
             }
             web::web_search(&query)
-        }
-        "schedule.add" => {
-            use crate::tools::schedule::{JobMode, global_scheduler};
-            let message = parse_json_arg(args, "message").unwrap_or_default();
-            if message.is_empty() {
-                return "Error: 'message' argument is required.".to_string();
-            }
-            let after_seconds = match serde_json::from_str::<serde_json::Value>(args) {
-                Ok(v) => v["after_seconds"].as_u64(),
-                Err(_) => None,
-            };
-            let interval_seconds = match serde_json::from_str::<serde_json::Value>(args) {
-                Ok(v) => v["interval_seconds"].as_u64(),
-                Err(_) => None,
-            };
-            let mode = match parse_json_arg(args, "mode").as_deref() {
-                Some("agent") => JobMode::Agent,
-                _ => JobMode::Reminder,
-            };
-            let agent_runner = if mode == JobMode::Agent {
-                ctx.agent_runner.clone()
-            } else {
-                None
-            };
-            global_scheduler().add_job(
-                &message,
-                after_seconds,
-                interval_seconds,
-                mode,
-                ctx.notifier.clone(),
-                agent_runner,
-            )
-        }
-        "schedule.list" => {
-            use crate::tools::schedule::global_scheduler;
-            global_scheduler().list_jobs()
-        }
-        "schedule.remove" => {
-            use crate::tools::schedule::global_scheduler;
-            let job_id = parse_json_arg(args, "job_id").unwrap_or_default();
-            if job_id.is_empty() {
-                return "Error: 'job_id' argument is required.".to_string();
-            }
-            global_scheduler().remove_job(&job_id)
         }
         _ if name.starts_with("skill.") => {
             // Skill tool: load the skill body and return as context.

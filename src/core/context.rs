@@ -137,11 +137,17 @@ pub fn build_messages(
         });
     }
 
-    if tape_messages.len() > max_context_messages {
+    let keep_messages = if max_context_messages == 0 && !tape_messages.is_empty() {
+        1
+    } else {
+        max_context_messages
+    };
+
+    if tape_messages.len() > keep_messages {
         messages.push(Message::system(
             "Older messages in this session have been truncated to fit the context window.",
         ));
-        let keep_start = tape_messages.len() - max_context_messages;
+        let keep_start = tape_messages.len() - keep_messages;
         messages.extend(tape_messages.into_iter().skip(keep_start));
     } else {
         messages.extend(tape_messages);
@@ -347,5 +353,44 @@ mod tests {
         assert_eq!(msgs[2].content, "Msg 3");
         assert_eq!(msgs[3].content, "Msg 4");
         assert_eq!(msgs[4].content, "Msg 5");
+    }
+
+    #[test]
+    fn zero_history_window_keeps_latest_message() {
+        let dir = tempdir().unwrap();
+        let mut tape = TapeStore::open(dir.path(), "ctx-zero").unwrap();
+        tape.append_message("user", "first").unwrap();
+        tape.append_message("assistant", "reply").unwrap();
+        tape.append_message("user", "current").unwrap();
+
+        let msgs = build_messages(&tape, Some("System Prompt"), 0);
+
+        assert_eq!(msgs.len(), 3);
+        assert_eq!(msgs[0].content, "System Prompt");
+        assert!(
+            msgs[1]
+                .content
+                .contains("truncated to fit the context window")
+        );
+        assert_eq!(msgs[2].content, "current");
+    }
+
+    #[test]
+    fn one_history_window_keeps_latest_message() {
+        let dir = tempdir().unwrap();
+        let mut tape = TapeStore::open(dir.path(), "ctx-one").unwrap();
+        tape.append_message("user", "first").unwrap();
+        tape.append_message("assistant", "reply").unwrap();
+        tape.append_message("user", "current").unwrap();
+
+        let msgs = build_messages(&tape, None, 1);
+
+        assert_eq!(msgs.len(), 2);
+        assert!(
+            msgs[0]
+                .content
+                .contains("truncated to fit the context window")
+        );
+        assert_eq!(msgs[1].content, "current");
     }
 }

@@ -4,4 +4,3 @@ pub mod exec;
 pub mod manager;
 pub mod repl;
 pub mod telegram;
-mod telegram_notify;

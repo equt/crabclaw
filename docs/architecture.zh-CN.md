@@ -88,7 +88,7 @@ src/
 - **渐进式工具视图**：省 token 的工具提示——系统提示词仅包含工具名和简述，完整 Schema 按需展开。
 - **AgentLoop 抽象**：统一 `AgentLoop` 结构体封装 route → model → tool → tape，提供 `handle_input` / `handle_input_stream` API。
 - **系统提示词**：模块化 5 段式组装，3 层优先级覆盖。
-- **上下文窗口管理**：滑动窗口截断（可配置 `MAX_CONTEXT_MESSAGES`，默认 50 条），自动注入截断通知。
+- **上下文窗口管理**：滑动窗口截断（可配置 `MAX_CONTEXT_MESSAGES`，默认 50 条），支持像 exec 这类事件源按 channel 覆盖历史窗口，并自动注入截断通知。
 
 ## 5. 测试架构
 

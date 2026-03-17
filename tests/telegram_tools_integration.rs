@@ -32,8 +32,6 @@ async fn openai_tool_calling_loop_returns_final_reply() {
         &config,
         workspace.path(),
         "test:tools",
-        None,
-        None,
     )
     .await;
 
@@ -81,8 +79,6 @@ async fn file_write_then_read_tool_sequence() {
         &config,
         workspace.path(),
         "test:file_ops",
-        None,
-        None,
     )
     .await;
 
@@ -120,8 +116,6 @@ async fn unknown_tool_name_recovery() {
         &config,
         workspace.path(),
         "test:unknown_tool",
-        None,
-        None,
     )
     .await;
 
@@ -150,15 +144,8 @@ async fn tool_loop_breaks_after_max_iterations() {
 
     let config = openai_config(&server.url());
     let workspace = TempDir::new().unwrap();
-    let response = process_message(
-        "loop forever",
-        &config,
-        workspace.path(),
-        "test:max_iter",
-        None,
-        None,
-    )
-    .await;
+    let response =
+        process_message("loop forever", &config, workspace.path(), "test:max_iter").await;
 
     assert!(
         response
@@ -193,15 +180,8 @@ async fn malformed_file_write_args_model_recovers() {
 
     let config = openai_config(&server.url());
     let workspace = TempDir::new().unwrap();
-    let response = process_message(
-        "create a file",
-        &config,
-        workspace.path(),
-        "test:bad_args",
-        None,
-        None,
-    )
-    .await;
+    let response =
+        process_message("create a file", &config, workspace.path(), "test:bad_args").await;
 
     assert!(response.error.is_none());
     assert_eq!(

@@ -6,7 +6,6 @@ use teloxide::types::{ChatAction, MediaKind, MessageKind, ParseMode};
 use tracing::{debug, info, warn};
 
 use crate::channels::base::{Channel, ChannelResponse};
-use crate::channels::telegram_notify::get_or_create_notifier_sender;
 use crate::core::config::AppConfig;
 
 /// Telegram channel adapter using long polling.
@@ -142,90 +141,6 @@ async fn handle_message(
         }
     }
 
-    // Build per-session notifier for schedule jobs (Bub-style context-bound callback)
-    let notifier: Option<crate::tools::schedule::Notifier> = {
-        let tg_token = config.telegram_token.clone().unwrap_or_default();
-        let tg_chat_id = chat_id.0;
-        let sender = get_or_create_notifier_sender(&tg_token, tg_chat_id).await;
-        Some(std::sync::Arc::new(move |text: String| {
-            if sender.send(text).is_err() {
-                warn!(chat_id = tg_chat_id, "telegram.notifier.sender_closed");
-            }
-        }))
-    };
-
-    // Build per-session agent runner for scheduled agent-mode jobs.
-    // When the job fires, this closure runs the full agent pipeline
-    // (LLM + tools like web.fetch) and sends the result to Telegram.
-    let agent_runner: Option<crate::tools::schedule::AgentRunner> = {
-        let run_config = config.clone();
-        let run_workspace = workspace.to_path_buf();
-        let run_session = format!("telegram:{}", chat_id.0);
-        let tg_token = config.telegram_token.clone().unwrap_or_default();
-        let tg_chat_id = chat_id.0;
-        Some(std::sync::Arc::new(move |prompt: String| {
-            let config = run_config.clone();
-            let workspace = run_workspace.clone();
-            let session_id = run_session.clone();
-            let token = tg_token.clone();
-            let chat = tg_chat_id;
-            Box::pin(async move {
-                info!(
-                    prompt = %prompt,
-                    session_id = %session_id,
-                    "schedule.agent_runner: starting agent execution"
-                );
-
-                // Run the full agent pipeline with the prompt
-                let response =
-                    process_message(&prompt, &config, &workspace, &session_id, None, None).await;
-
-                // Deliver the result to the Telegram chat
-                match response.to_reply() {
-                    Some(reply) => {
-                        info!(
-                            reply_len = reply.len(),
-                            "schedule.agent_runner: delivering result to telegram"
-                        );
-                        let url = format!("https://api.telegram.org/bot{token}/sendMessage");
-                        let client = reqwest::Client::new();
-                        for chunk in split_message(&reply, 4096) {
-                            let html = markdown_to_telegram_html(&chunk);
-                            match client
-                                .post(&url)
-                                .json(&serde_json::json!({
-                                    "chat_id": chat,
-                                    "text": html,
-                                    "parse_mode": "HTML",
-                                }))
-                                .send()
-                                .await
-                            {
-                                Ok(resp) => {
-                                    if !resp.status().is_success() {
-                                        warn!(
-                                            status = %resp.status(),
-                                            "schedule.agent_runner: telegram sendMessage failed"
-                                        );
-                                    }
-                                }
-                                Err(e) => {
-                                    warn!(
-                                        error = %e,
-                                        "schedule.agent_runner: telegram sendMessage error"
-                                    );
-                                }
-                            }
-                        }
-                    }
-                    None => {
-                        warn!("schedule.agent_runner: process_message returned empty response");
-                    }
-                }
-            })
-        }))
-    };
-
     let session_id = format!("telegram:{}", chat_id.0);
     info!(
         session_id = %session_id,
@@ -245,15 +160,7 @@ async fn handle_message(
     });
 
     // Process through CrabClaw router + model + tool calling
-    let response = process_message(
-        &text,
-        &config,
-        workspace,
-        &session_id,
-        notifier,
-        agent_runner,
-    )
-    .await;
+    let response = process_message(&text, &config, workspace, &session_id).await;
 
     // Stop typing indicator
     typing_handle.abort();
@@ -314,15 +221,12 @@ pub async fn process_message(
     config: &AppConfig,
     workspace: &std::path::Path,
     session_id: &str,
-    notifier: Option<crate::tools::schedule::Notifier>,
-    agent_runner: Option<crate::tools::schedule::AgentRunner>,
 ) -> ChannelResponse {
     let mut agent = match crate::core::agent_loop::AgentLoop::open(
         config,
         workspace,
         session_id,
-        notifier,
-        agent_runner,
+        config.max_context_messages,
     ) {
         Ok(a) => a,
         Err(e) => {

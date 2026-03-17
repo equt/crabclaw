@@ -28,7 +28,13 @@ async fn non_streaming_tool_calling_loop_runs_then_returns_text() {
 
     let config = openai_config(&server.url());
     let workspace = TempDir::new().unwrap();
-    let mut agent = AgentLoop::open(&config, workspace.path(), "test_tools", None, None).unwrap();
+    let mut agent = AgentLoop::open(
+        &config,
+        workspace.path(),
+        "test_tools",
+        config.max_context_messages,
+    )
+    .unwrap();
 
     let result = agent.handle_input("what tools?").await;
     assert!(result.error.is_none());
@@ -63,8 +69,13 @@ async fn streaming_delivers_tokens_and_handles_tool_round() {
 
     let config = openai_config(&server.url());
     let workspace = TempDir::new().unwrap();
-    let mut agent =
-        AgentLoop::open(&config, workspace.path(), "test_stream_tool", None, None).unwrap();
+    let mut agent = AgentLoop::open(
+        &config,
+        workspace.path(),
+        "test_stream_tool",
+        config.max_context_messages,
+    )
+    .unwrap();
 
     let mut tokens = Vec::<String>::new();
     let result = agent
@@ -98,8 +109,13 @@ async fn unknown_tool_call_recovery_path() {
 
     let config = openai_config(&server.url());
     let workspace = TempDir::new().unwrap();
-    let mut agent =
-        AgentLoop::open(&config, workspace.path(), "test_unknown_tool", None, None).unwrap();
+    let mut agent = AgentLoop::open(
+        &config,
+        workspace.path(),
+        "test_unknown_tool",
+        config.max_context_messages,
+    )
+    .unwrap();
 
     let result = agent.handle_input("use fake tool").await;
     assert!(result.error.is_none());
@@ -132,7 +148,13 @@ async fn file_edit_tool_call_modifies_file() {
         .await;
 
     let config = openai_config(&server.url());
-    let mut agent = AgentLoop::open(&config, workspace.path(), "test_edit", None, None).unwrap();
+    let mut agent = AgentLoop::open(
+        &config,
+        workspace.path(),
+        "test_edit",
+        config.max_context_messages,
+    )
+    .unwrap();
     let result = agent.handle_input("replace hello").await;
 
     assert!(result.error.is_none());
@@ -156,8 +178,13 @@ async fn tool_loop_breaks_after_max_iterations_without_hanging() {
 
     let config = openai_config(&server.url());
     let workspace = TempDir::new().unwrap();
-    let mut agent =
-        AgentLoop::open(&config, workspace.path(), "test_max_iter", None, None).unwrap();
+    let mut agent = AgentLoop::open(
+        &config,
+        workspace.path(),
+        "test_max_iter",
+        config.max_context_messages,
+    )
+    .unwrap();
 
     let result = agent.handle_input("loop forever?").await;
     assert!(

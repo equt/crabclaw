@@ -88,7 +88,7 @@ A complete agentic loop executes roughly as follows:
 - **Progressive Tool View**: Token-efficient tool hinting — only tool names and short descriptions are sent in the system prompt. Full schemas expand on demand when the model references a tool.
 - **AgentLoop Abstraction**: Unified `AgentLoop` struct encapsulates route → model → tool → tape into a clean `handle_input` / `handle_input_stream` API.
 - **System Prompt**: Modular 5-section prompt assembly with 3-tier override priority.
-- **Context Window Management**: Sliding window truncation with configurable `MAX_CONTEXT_MESSAGES` (default: 50) and synthetic truncation notice.
+- **Context Window Management**: Sliding window truncation with configurable `MAX_CONTEXT_MESSAGES` (default: 50), per-channel overrides for event sources such as exec, and a synthetic truncation notice.
 
 ## 5. Test Architecture
 

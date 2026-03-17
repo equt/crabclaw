@@ -2,8 +2,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use tokio::io::{AsyncBufReadExt, BufReader};
 use std::process::Stdio;
+use tokio::io::{AsyncBufReadExt, BufReader};
 use tracing::{info, warn};
 
 use crate::channels::base::Channel;
@@ -56,6 +56,7 @@ impl Channel for ExecChannel {
                 None => extra.clone(),
             });
         }
+        let history_messages = self.exec_config.history_messages.unwrap_or(0);
 
         // Spawn the external command
         let mut child = tokio::process::Command::new("/bin/sh")
@@ -80,14 +81,14 @@ impl Channel for ExecChannel {
             };
 
             let session_id = format!("exec:{}:ephemeral", self.exec_config.name);
-            let mut agent = match AgentLoop::open(&merged, &self.workspace, &session_id, None, None)
-            {
-                Ok(a) => a,
-                Err(e) => {
-                    warn!("exec.{}.agent_loop.error: {e}", self.exec_config.name);
-                    continue;
-                }
-            };
+            let mut agent =
+                match AgentLoop::open(&merged, &self.workspace, &session_id, history_messages) {
+                    Ok(a) => a,
+                    Err(e) => {
+                        warn!("exec.{}.agent_loop.error: {e}", self.exec_config.name);
+                        continue;
+                    }
+                };
 
             let result = agent.handle_input(&json_val.to_string()).await;
 
@@ -146,6 +147,7 @@ mod tests {
             name: "foo".to_string(),
             command: "echo test".to_string(),
             prompt: None,
+            history_messages: None,
         };
         let ch = ExecChannel::new(config, PathBuf::from("/tmp"), exec_cfg);
         assert_eq!(ch.name(), "exec:foo");

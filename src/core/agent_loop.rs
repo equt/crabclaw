@@ -16,7 +16,6 @@ use crate::core::router::route_user;
 use crate::tape::store::TapeStore;
 use crate::tools::progressive::ProgressiveToolView;
 use crate::tools::registry::ToolContext;
-use crate::tools::schedule::Notifier;
 
 const ASSISTANT_COMMANDS_ENV_KEY: &str = "CRABCLAW_ENABLE_ASSISTANT_COMMANDS";
 
@@ -70,6 +69,7 @@ impl LoopResult {
 pub struct AgentLoop<'a> {
     config: &'a AppConfig,
     workspace: &'a Path,
+    history_messages: usize,
     tape: TapeStore,
     tool_view: ProgressiveToolView,
     tool_ctx: ToolContext,
@@ -79,16 +79,11 @@ impl<'a> AgentLoop<'a> {
     /// Create a new agent loop for a session.
     ///
     /// Opens or creates the tape file for `session_id`.
-    /// `notifier` is an optional callback for delivering notifications
-    /// (e.g. schedule reminders) back to the originating channel.
-    /// `agent_runner` is an optional async callback for running the
-    /// full agent pipeline on schedule fire (agent-mode jobs).
     pub fn open(
         config: &'a AppConfig,
         workspace: &'a Path,
         session_id: &str,
-        notifier: Option<Notifier>,
-        agent_runner: Option<crate::tools::schedule::AgentRunner>,
+        history_messages: usize,
     ) -> Result<Self> {
         let tape_dir = workspace.join(".crabclaw");
         let tape_name = session_id.replace(':', "_");
@@ -100,17 +95,13 @@ impl<'a> AgentLoop<'a> {
 
         let tool_view = ProgressiveToolView::new(registry);
 
-        let tool_ctx = ToolContext {
-            notifier,
-            agent_runner,
-        };
-
         let mut loop_instance = Self {
             config,
             workspace,
+            history_messages,
             tape,
             tool_view,
-            tool_ctx,
+            tool_ctx: ToolContext::empty(),
         };
 
         loop_instance
@@ -165,11 +156,7 @@ impl<'a> AgentLoop<'a> {
             self.workspace,
             Some(&tools_prompt),
         );
-        let mut messages = build_messages(
-            &self.tape,
-            Some(&system_prompt),
-            self.config.max_context_messages,
-        );
+        let mut messages = build_messages(&self.tape, Some(&system_prompt), self.history_messages);
 
         debug!(message_count = messages.len(), "agent_loop.model_request");
 
@@ -231,11 +218,7 @@ impl<'a> AgentLoop<'a> {
             self.workspace,
             Some(&tools_prompt),
         );
-        let mut messages = build_messages(
-            &self.tape,
-            Some(&system_prompt),
-            self.config.max_context_messages,
-        );
+        let mut messages = build_messages(&self.tape, Some(&system_prompt), self.history_messages);
 
         debug!(message_count = messages.len(), "agent_loop.stream_request");
 
@@ -402,7 +385,12 @@ mod tests {
     fn agent_loop_opens_and_creates_tape() {
         let dir = tempdir().unwrap();
         let config = test_config();
-        let loop_ = AgentLoop::open(&config, dir.path(), "test_session", None, None);
+        let loop_ = AgentLoop::open(
+            &config,
+            dir.path(),
+            "test_session",
+            config.max_context_messages,
+        );
         assert!(loop_.is_ok());
         // Tape file should exist
         let tape_path = dir.path().join(".crabclaw").join("test_session.jsonl");
@@ -413,7 +401,12 @@ mod tests {
     fn agent_loop_replaces_colons_in_session_id() {
         let dir = tempdir().unwrap();
         let config = test_config();
-        let loop_ = AgentLoop::open(&config, dir.path(), "telegram:12345", None, None);
+        let loop_ = AgentLoop::open(
+            &config,
+            dir.path(),
+            "telegram:12345",
+            config.max_context_messages,
+        );
         assert!(loop_.is_ok());
         let tape_path = dir.path().join(".crabclaw").join("telegram_12345.jsonl");
         assert!(tape_path.exists());
@@ -423,7 +416,8 @@ mod tests {
     async fn handle_input_empty_returns_no_output() {
         let dir = tempdir().unwrap();
         let config = test_config();
-        let mut loop_ = AgentLoop::open(&config, dir.path(), "test", None, None).unwrap();
+        let mut loop_ =
+            AgentLoop::open(&config, dir.path(), "test", config.max_context_messages).unwrap();
         let result = loop_.handle_input("").await;
         assert!(result.immediate_output.is_none());
         assert!(result.assistant_output.is_none());
@@ -434,7 +428,8 @@ mod tests {
     async fn handle_input_help_command() {
         let dir = tempdir().unwrap();
         let config = test_config();
-        let mut loop_ = AgentLoop::open(&config, dir.path(), "test", None, None).unwrap();
+        let mut loop_ =
+            AgentLoop::open(&config, dir.path(), "test", config.max_context_messages).unwrap();
         let result = loop_.handle_input(",help").await;
         assert!(result.immediate_output.is_some());
         assert!(result.assistant_output.is_none());
@@ -445,7 +440,8 @@ mod tests {
     async fn handle_input_quit_exits() {
         let dir = tempdir().unwrap();
         let config = test_config();
-        let mut loop_ = AgentLoop::open(&config, dir.path(), "test", None, None).unwrap();
+        let mut loop_ =
+            AgentLoop::open(&config, dir.path(), "test", config.max_context_messages).unwrap();
         let result = loop_.handle_input(",quit").await;
         assert!(result.exit_requested);
     }
@@ -454,7 +450,8 @@ mod tests {
     fn reset_tape_clears_and_re_bootstraps() {
         let dir = tempdir().unwrap();
         let config = test_config();
-        let mut loop_ = AgentLoop::open(&config, dir.path(), "test", None, None).unwrap();
+        let mut loop_ =
+            AgentLoop::open(&config, dir.path(), "test", config.max_context_messages).unwrap();
         loop_.tape_mut().append_message("user", "hello").unwrap();
         assert!(loop_.reset_tape().is_ok());
         // After reset, entries should be minimal (just bootstrap anchor)
@@ -495,7 +492,8 @@ mod tests {
     fn process_turn_result_tracks_invoked_tools_without_assistant_text() {
         let dir = tempdir().unwrap();
         let config = test_config();
-        let mut loop_ = AgentLoop::open(&config, dir.path(), "test", None, None).unwrap();
+        let mut loop_ =
+            AgentLoop::open(&config, dir.path(), "test", config.max_context_messages).unwrap();
         let turn = ModelTurnResult {
             assistant_text: String::new(),
             tool_rounds: 1,
@@ -510,5 +508,25 @@ mod tests {
         assert_eq!(result.tool_rounds, 1);
         assert!(result.assistant_output.is_none());
         assert!(result.error.is_some());
+    }
+
+    #[test]
+    fn zero_history_window_keeps_current_input_only() {
+        let dir = tempdir().unwrap();
+        let mut tape = TapeStore::open(dir.path(), "ctx-zero").unwrap();
+        tape.append_message("user", "first").unwrap();
+        tape.append_message("assistant", "reply").unwrap();
+        tape.append_message("user", "current").unwrap();
+
+        let messages = build_messages(&tape, Some("system"), 0);
+
+        assert_eq!(messages.len(), 3);
+        assert_eq!(messages[0].role, "system");
+        assert!(
+            messages[1]
+                .content
+                .contains("truncated to fit the context window")
+        );
+        assert_eq!(messages[2].content, "current");
     }
 }

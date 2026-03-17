@@ -130,11 +130,13 @@ mod tests {
                     name: "foo".to_string(),
                     command: "echo ok".to_string(),
                     prompt: None,
+                    history_messages: None,
                 },
                 ExecChannelConfig {
                     name: "bar".to_string(),
                     command: "echo ok".to_string(),
                     prompt: None,
+                    history_messages: None,
                 },
             ],
         });

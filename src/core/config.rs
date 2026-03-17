@@ -26,6 +26,7 @@ pub struct ExecChannelConfig {
     pub name: String,
     pub command: String,
     pub prompt: Option<String>,
+    pub history_messages: Option<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -233,10 +234,15 @@ pub fn resolve_config(
                     };
                     let prompt =
                         first_present([env_vars.get(&prompt_key), dotenv_vars.get(&prompt_key)]);
+                    let history_key = format!("EXEC_{upper}_HISTORY_MESSAGES");
+                    let history_messages =
+                        first_present([env_vars.get(&history_key), dotenv_vars.get(&history_key)])
+                            .and_then(|s| s.parse::<usize>().ok());
                     Some(ExecChannelConfig {
                         name,
                         command,
                         prompt,
+                        history_messages,
                     })
                 })
                 .collect()
@@ -577,9 +583,11 @@ mod tests {
             config.exec_channels[0].prompt.as_deref(),
             Some("Handle foo events")
         );
+        assert!(config.exec_channels[0].history_messages.is_none());
         assert_eq!(config.exec_channels[1].name, "bar");
         assert_eq!(config.exec_channels[1].command, "cmd2");
         assert!(config.exec_channels[1].prompt.is_none());
+        assert!(config.exec_channels[1].history_messages.is_none());
     }
 
     #[test]
@@ -626,5 +634,26 @@ mod tests {
         .unwrap();
         assert_eq!(config.exec_channels.len(), 1);
         assert_eq!(config.exec_channels[0].name, "foo");
+        assert!(config.exec_channels[0].history_messages.is_none());
+    }
+
+    #[test]
+    fn exec_channel_history_messages_parsed_from_env() {
+        let mut env_vars = HashMap::new();
+        env_vars.insert("API_KEY".to_string(), "key".to_string());
+        env_vars.insert("EXEC_CHANNELS".to_string(), "foo".to_string());
+        env_vars.insert("EXEC_FOO_COMMAND".to_string(), "cmd1".to_string());
+        env_vars.insert("EXEC_FOO_HISTORY_MESSAGES".to_string(), "3".to_string());
+
+        let config = resolve_config(
+            None,
+            &CliConfigOverrides::default(),
+            &env_vars,
+            &HashMap::new(),
+        )
+        .unwrap();
+
+        assert_eq!(config.exec_channels.len(), 1);
+        assert_eq!(config.exec_channels[0].history_messages, Some(3));
     }
 }
