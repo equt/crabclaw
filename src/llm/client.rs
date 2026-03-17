@@ -1,6 +1,7 @@
 use std::sync::OnceLock;
 use std::time::Duration;
 
+use serde::Serialize;
 use tracing::{debug, info, instrument, warn};
 
 use crate::core::config::AppConfig;
@@ -57,6 +58,13 @@ fn anthropic_access_token(config: &AppConfig) -> Result<&str> {
                 "anthropic models require ANTHROPIC_ACCESS_TOKEN (or PROFILE_<PROFILE>_ANTHROPIC_ACCESS_TOKEN).".to_string(),
             )
         })
+}
+
+fn log_anthropic_request_payload<T: Serialize>(request_kind: &str, payload: &T) {
+    match serde_json::to_string_pretty(payload) {
+        Ok(body) => debug!(request_kind, body = %body, "anthropic.request.payload"),
+        Err(error) => debug!(request_kind, %error, "failed to serialize anthropic request payload"),
+    }
 }
 
 fn merged_system_prompt(messages: &[crate::llm::api_types::Message]) -> Option<String> {
@@ -273,6 +281,7 @@ async fn send_anthropic_request(
         has_system = anth_req.system.is_some(),
         "anthropic.request"
     );
+    log_anthropic_request_payload("chat", &anth_req);
 
     let client = get_http_client();
 
@@ -371,6 +380,7 @@ async fn send_anthropic_request_stream(
     if let Some(obj) = json_val.as_object_mut() {
         obj.insert("stream".to_string(), serde_json::Value::Bool(true));
     }
+    log_anthropic_request_payload("stream", &json_val);
 
     let response = client
         .post(&url)
